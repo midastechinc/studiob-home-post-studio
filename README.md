@@ -52,7 +52,7 @@ The browser cannot call supplier sites directly (CORS). This repo includes **`ap
 - **Local with API:** from this directory run `npx vercel dev` so the dev server serves both the frontend and `GET /api/fetch-url?url=…` (allowlisted hosts: Henge, Dedon, Walter Knoll).
 - **Online:** use a Vercel deployment (above); production and preview URLs both expose `/api/fetch-url` on the same host as the UI.
 
-Plain `npm run dev` still lets you edit suppliers, caption, and preview (using the logo as a placeholder image until import works).
+Plain `npm run dev` still lets you edit suppliers, caption, and preview (using `public/logo.svg` as a placeholder until import fills product images).
 
 ## New GitHub repository
 

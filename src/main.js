@@ -55,6 +55,19 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+/** Resolve og:image / twitter:image URLs (protocol-relative, relative, absolute). */
+function normalizeImageUrl(raw, pageUrl) {
+  let u = (raw || '').trim();
+  if (!u) return '';
+  if (u.startsWith('//')) u = 'https:' + u;
+  if (/^https?:/i.test(u)) return u;
+  try {
+    return new URL(u, pageUrl).href;
+  } catch {
+    return '';
+  }
+}
+
 function parseProductHtml(html, pageUrl) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const pick = (sel) => doc.querySelector(sel)?.getAttribute('content')?.trim();
@@ -66,25 +79,13 @@ function parseProductHtml(html, pageUrl) {
     pick('meta[property="og:description"]') ||
     pick('meta[name="description"]') ||
     '';
-  let image = pick('meta[property="og:image"]') || pick('meta[name="twitter:image"]') || '';
-  if (image && !/^https?:/i.test(image)) {
-    try {
-      image = new URL(image, pageUrl).href;
-    } catch {
-      image = '';
-    }
-  }
+  const baseUrl = pageUrl || '';
+  let image =
+    normalizeImageUrl(pick('meta[property="og:image"]') || pick('meta[name="twitter:image"]') || '', baseUrl);
   const extras = [];
   doc.querySelectorAll('meta[property="og:image"]').forEach((m, i) => {
     if (i === 0) return;
-    let u = m.getAttribute('content')?.trim();
-    if (u && !/^https?:/i.test(u)) {
-      try {
-        u = new URL(u, pageUrl).href;
-      } catch {
-        u = '';
-      }
-    }
+    const u = normalizeImageUrl(m.getAttribute('content') || '', baseUrl);
     if (u && u !== image) extras.push(u);
   });
   return { title, desc, images: [image, ...extras].filter(Boolean) };
@@ -111,7 +112,7 @@ function render() {
         <h1>Post Studio</h1>
         <p class="hdr-sub">Luxury Instagram carousels from supplier pages. All Studio B Post Studio code and data for this tool belong in this repository only.</p>
       </div>
-      <img class="hdr-logo" src="/logo.png" alt="Studio B Home" width="120" height="120" />
+      <img class="hdr-logo" src="/logo.svg" alt="Studio B Home" width="120" height="120" />
     </header>
 
     <div class="grid">
@@ -208,7 +209,7 @@ function slidesPlan() {
   const n = state.slideCount;
   const imgs = state.product.images.length
     ? state.product.images
-    : ['/logo.png'];
+    : ['/logo.svg'];
   const out = [];
   for (let i = 0; i < n - 1; i++) {
     out.push({ type: 'image', src: imgs[i % imgs.length] });
@@ -230,7 +231,7 @@ function renderSlides() {
       if (slide.type === 'brand') {
         return `
         <div class="slide ${i === state.activeSlide ? 'active' : ''}" data-i="${i}">
-          <img src="/logo.png" alt="" style="object-fit:contain;object-position:center;padding:18%;background:#111;" />
+          <img src="/logo.svg" alt="" style="object-fit:contain;object-position:center;padding:18%;background:#111;" />
           <div class="slide-brand">
             <strong>Visit Studio B Home</strong>
             ${SHOWROOM.lines.map((l) => escapeHtml(l)).join('<br />')}
@@ -241,9 +242,10 @@ function renderSlides() {
       }
       const title = state.product.title || 'New arrival';
       const desc = state.product.desc || '';
+      const ext = /^https?:\/\//i.test(slide.src);
       return `
         <div class="slide ${i === state.activeSlide ? 'active' : ''}" data-i="${i}">
-          <img src="${escapeHtml(slide.src)}" alt="" crossorigin="anonymous" />
+          <img src="${escapeHtml(slide.src)}" alt=""${ext ? ' referrerpolicy="no-referrer"' : ''} />
           <div class="slide-brand">
             <strong>${escapeHtml(title)}</strong>
             ${escapeHtml(desc).slice(0, 220)}${desc.length > 220 ? '…' : ''}

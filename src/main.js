@@ -540,16 +540,21 @@ function bind() {
         renderSlides();
         return;
       }
-      const parsed = parseProductHtml(data.html || '', data.finalUrl || url);
+      const finalPageUrl = data.finalUrl || url;
+      const parsed = parseProductHtml(data.html || '', finalPageUrl);
+      const serverUrls = Array.isArray(data.imageUrls)
+        ? data.imageUrls.map((u) => normalizeImageUrl(String(u), finalPageUrl)).filter(Boolean)
+        : [];
+      const mergedImages = dedupeImageUrls([...serverUrls, ...parsed.images]);
       const extraImageLines =
         document.getElementById('extra-images')?.value ?? state.product.extraImageLines;
       state.product = {
         title: parsed.title,
         desc: parsed.desc,
-        images: parsed.images.length ? parsed.images : [],
+        images: mergedImages.length ? mergedImages : [],
         extraImageLines
       };
-      const nImg = parsed.images.length;
+      const nImg = mergedImages.length;
       state.fetchMsg =
         nImg > 1 ? `Imported ${nImg} image URLs from page.`
         : nImg === 1 ?

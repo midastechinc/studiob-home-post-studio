@@ -3,6 +3,7 @@ import './style.css';
 const STORAGE_SUPPLIERS = 'sb-suppliers-v1';
 const STORAGE_CAPTION = 'sb-caption-v1';
 const STORAGE_SLIDES = 'sb-slide-count-v1';
+const STORAGE_EXTRA_IMAGES = 'sb-product-extra-images-v1';
 
 const DEFAULT_SUPPLIERS = [
   { name: 'Henge', url: 'https://www.henge07.com/' },
@@ -77,6 +78,92 @@ function dedupeImageUrls(urls) {
     out.push(u);
   }
   return out;
+}
+
+function isJunkImageUrl(u) {
+  return /favicon|sprite|icons?\/|\/icon-|logo-|avatar|gravatar|pixel|spacer|1x1|placeholder|badge-|loading\.|blank\.|apple-touch|ms-icon|og-image-default|social-share|share-icon|payment-|credit-card|trustpilot|facebook\.com|twitter\.com|linkedin\.com|google-analytics|googletagmanager|doubleclick|hotjar|clarity\.ms|data:image/i.test(
+    u
+  );
+}
+
+/** Any string in JSON that looks like a direct image URL (galleries often live in __NEXT_DATA__ etc.). */
+function collectImageLikeUrlsFromJson(node, out, depth = 0) {
+  if (out.length >= 200 || depth > 120 || node == null) return;
+  if (typeof node === 'string') {
+    if (!/^https?:\/\//i.test(node)) return;
+    if (!/\.(jpe?g|png|webp|gif)(\?|#|$)/i.test(node)) return;
+    if (isJunkImageUrl(node)) return;
+    out.push(node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const x of node) collectImageLikeUrlsFromJson(x, out, depth + 1);
+    return;
+  }
+  if (typeof node === 'object') {
+    for (const v of Object.values(node)) {
+      collectImageLikeUrlsFromJson(v, out, depth + 1);
+    }
+  }
+}
+
+/** Parse inline scripts (not ld+json) as JSON and harvest image URLs. */
+function collectImagesFromInlineJsonScripts(doc) {
+  const out = [];
+  doc.querySelectorAll('script:not([src])').forEach((s) => {
+    if ((s.getAttribute('type') || '').includes('ld+json')) return;
+    const text = (s.textContent || '').trim();
+    if (text.length < 500 || text.length > 3_500_000) return;
+    if (!/\.(jpe?g|png|webp|gif)/i.test(text)) return;
+    try {
+      collectImageLikeUrlsFromJson(JSON.parse(text), out, 0);
+    } catch {
+      /* not valid JSON — raw HTML scan handles quoted URLs below */
+    }
+  });
+  return out;
+}
+
+/** Regex-scan full HTML: galleries are often only inside JS strings in the initial payload. */
+function collectImagesFromHtmlString(html, anchorUrl) {
+  const re = /https?:\/\/[^\s"'<>\\`]+?\.(?:jpe?g|png|webp|gif)(?:\?[^\s"'<>\\`#]*)?/gi;
+  const hits = [];
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (hits.length > 120) break;
+    let u = m[0].replace(/\\u002f/gi, '/').replace(/\\u0026/g, '&');
+    u = u.replace(/[,;)}'"]+$/g, '');
+    if (isJunkImageUrl(u)) continue;
+    hits.push({ u, i: m.index });
+  }
+  let ogHost = '';
+  try {
+    ogHost = anchorUrl ? new URL(anchorUrl).hostname : '';
+  } catch {
+    ogHost = '';
+  }
+  hits.sort((a, b) => {
+    let sa = 0;
+    let sb = 0;
+    try {
+      if (ogHost && new URL(a.u).hostname === ogHost) sa += 10;
+      if (ogHost && new URL(b.u).hostname === ogHost) sb += 10;
+    } catch {
+      /* ignore */
+    }
+    if (sb !== sa) return sb - sa;
+    return a.i - b.i;
+  });
+  return dedupeImageUrls(hits.map((h) => h.u));
+}
+
+function parseExtraImageLines(text) {
+  return dedupeImageUrls(
+    (text || '')
+      .split(/\n/)
+      .map((l) => normalizeImageUrl(l.trim(), ''))
+      .filter(Boolean)
+  );
 }
 
 function pushJsonLdImageValues(v, out) {
@@ -199,9 +286,14 @@ function parseProductHtml(html, pageUrl) {
 
   const fromLd = collectImagesFromJsonLdScripts(doc).map((r) => normalizeImageUrl(r, baseUrl)).filter(Boolean);
   const fromDom = collectImagesFromDom(doc, baseUrl);
+  const fromScripts = collectImagesFromInlineJsonScripts(doc)
+    .map((r) => normalizeImageUrl(r, baseUrl))
+    .filter(Boolean);
+  const anchor = fromMeta[0] || '';
+  const fromRawHtml = collectImagesFromHtmlString(html, anchor).map((r) => normalizeImageUrl(r, baseUrl)).filter(Boolean);
 
-  const merged = dedupeImageUrls([...fromMeta, ...fromLd, ...fromDom]);
-  const maxImages = 24;
+  const merged = dedupeImageUrls([...fromMeta, ...fromLd, ...fromDom, ...fromScripts, ...fromRawHtml]);
+  const maxImages = 36;
   const images = merged.slice(0, maxImages);
 
   return { title, desc, images };
@@ -211,7 +303,12 @@ let state = {
   suppliers: loadSuppliers(),
   caption: localStorage.getItem(STORAGE_CAPTION) || '',
   slideCount: Math.min(7, Math.max(3, parseInt(localStorage.getItem(STORAGE_SLIDES) || '5', 10) || 5)),
-  product: { title: '', desc: '', images: [] },
+  product: {
+    title: '',
+    desc: '',
+    images: [],
+    extraImageLines: localStorage.getItem(STORAGE_EXTRA_IMAGES) || ''
+  },
   activeSlide: 0,
   fetchMsg: '',
   fetchErr: ''
@@ -259,6 +356,10 @@ function render() {
           <label for="desc-edit">Short description (for slides)</label>
           <textarea id="desc-edit" rows="3">${escapeHtml(state.product.desc)}</textarea>
         </div>
+        <div class="field">
+          <label for="extra-images">Extra product image URLs (one per line)</label>
+          <textarea id="extra-images" rows="4" placeholder="Paste direct image links from the supplier gallery (right-click image → copy address). Optional if import finds enough photos.">${escapeHtml(state.product.extraImageLines)}</textarea>
+        </div>
       </section>
 
       <section class="panel">
@@ -270,7 +371,7 @@ function render() {
         </div>
 
         <h2 style="margin-top:22px">Carousel</h2>
-        <p class="panel-note">3–7 slides. First slides use product images; last slide is showroom + logo.</p>
+        <p class="panel-note">3–7 slides. First slides cycle imported + extra image URLs; last slide is showroom + logo.</p>
         <div class="field">
           <label for="slide-count">Number of slides</label>
           <select id="slide-count">
@@ -321,14 +422,20 @@ function renderSuppliers() {
     .join('');
 }
 
+function productImageUrlsForSlides() {
+  const manual = parseExtraImageLines(state.product.extraImageLines);
+  const auto = state.product.images || [];
+  const merged = dedupeImageUrls([...auto, ...manual]);
+  return merged.length ? merged : [];
+}
+
 function slidesPlan() {
   const n = state.slideCount;
-  const imgs = state.product.images.length
-    ? state.product.images
-    : ['/logo.svg'];
+  const imgs = productImageUrlsForSlides();
+  const list = imgs.length ? imgs : ['/logo.svg'];
   const out = [];
   for (let i = 0; i < n - 1; i++) {
-    out.push({ type: 'image', src: imgs[i % imgs.length] });
+    out.push({ type: 'image', src: list[i % list.length] });
   }
   out.push({ type: 'brand' });
   return out;
@@ -434,12 +541,20 @@ function bind() {
         return;
       }
       const parsed = parseProductHtml(data.html || '', data.finalUrl || url);
+      const extraImageLines =
+        document.getElementById('extra-images')?.value ?? state.product.extraImageLines;
       state.product = {
         title: parsed.title,
         desc: parsed.desc,
-        images: parsed.images.length ? parsed.images : []
+        images: parsed.images.length ? parsed.images : [],
+        extraImageLines
       };
-      state.fetchMsg = 'Imported metadata from page.';
+      const nImg = parsed.images.length;
+      state.fetchMsg =
+        nImg > 1 ? `Imported ${nImg} image URLs from page.`
+        : nImg === 1 ?
+          'Imported 1 image from page. Add more URLs below or paste gallery links if slides repeat the same photo.'
+        : 'Imported text only; no images found in HTML. Paste direct image URLs below.';
       document.getElementById('title-edit').value = state.product.title;
       document.getElementById('desc-edit').value = state.product.desc;
       state.activeSlide = 0;
@@ -457,6 +572,12 @@ function bind() {
   });
   document.getElementById('desc-edit')?.addEventListener('input', (e) => {
     state.product.desc = e.target.value;
+    renderSlides();
+  });
+
+  document.getElementById('extra-images')?.addEventListener('input', (e) => {
+    state.product.extraImageLines = e.target.value;
+    localStorage.setItem(STORAGE_EXTRA_IMAGES, state.product.extraImageLines);
     renderSlides();
   });
 

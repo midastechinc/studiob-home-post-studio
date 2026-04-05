@@ -2,13 +2,20 @@
   "name": "studiob-home-post-studio",
   "version": "0.1.0",
   "private": true,
-  "description": "Studio B Home — luxury Instagram post designer (suppliers, preview, export)",
+  "description": "Studio B Home — luxury Instagram post designer",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "dev": "echo \"App scaffold coming next — run a static server on . or add Vite\"",
-    "test": "echo \"No tests yet\" && exit 0"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.2.0"
+  },
+  "dependencies": {
+    "html2canvas": "^1.4.1"
   }
 }

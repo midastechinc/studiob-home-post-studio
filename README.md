@@ -1,25 +1,36 @@
 # Studio B Home — Post Studio
 
-Internal tool to compose premium Instagram-style posts from supplier product pages: brand assets, showroom details, multi-slide preview, and export.
+Standalone app for drafting **luxury Instagram-style carousels**: supplier list, product URL import (via serverless fetch), long-form caption, and a **4:5 preview** (3–7 slides). This repository contains **only** this application.
 
-## Status
-
-Repository initialized — application UI and APIs will land in follow-up commits.
-
-## Local setup
+## Run locally (UI)
 
 ```bash
-git clone <your-remote-url>
 cd studiob-home-post-studio
+npm install
+npm run dev
 ```
 
-Add a remote on GitHub/GitLab when ready:
+Open the URL Vite prints (usually `http://localhost:5174`).
+
+## Product import (`/api/fetch-url`)
+
+The browser cannot call supplier sites directly (CORS). This repo includes **`api/fetch-url.js`** for **Vercel**.
+
+- **Option A — Vercel CLI:** from this directory run `npx vercel dev` so `http://localhost:3000` (or the port shown) serves both the Vite proxy and API. Link Vite to that port if needed, or deploy and use the preview URL.
+- **Option B — Deploy** this repo to Vercel; the production URL will serve `GET /api/fetch-url?url=…` with an allowlist (Henge, Dedon, Walter Knoll domains).
+
+Plain `npm run dev` still lets you edit suppliers, caption, and preview (using the logo as a placeholder image until import works).
+
+## New GitHub repository
+
+Create an empty repo (e.g. `studiob-home-post-studio`), then:
 
 ```bash
-git remote add origin <url>
+git remote add origin https://github.com/YOUR_ORG/studiob-home-post-studio.git
+git branch -M main
 git push -u origin main
 ```
 
 ## License
 
-Proprietary — Studio B Home / Midas Tech. All rights reserved unless otherwise agreed.
+Proprietary — Studio B Home / Midas Tech unless otherwise agreed.

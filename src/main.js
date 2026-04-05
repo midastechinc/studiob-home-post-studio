@@ -68,6 +68,107 @@ function normalizeImageUrl(raw, pageUrl) {
   }
 }
 
+function dedupeImageUrls(urls) {
+  const seen = new Set();
+  const out = [];
+  for (const u of urls) {
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
+}
+
+function pushJsonLdImageValues(v, out) {
+  if (typeof v === 'string') {
+    out.push(v);
+    return;
+  }
+  if (Array.isArray(v)) {
+    for (const x of v) pushJsonLdImageValues(x, out);
+    return;
+  }
+  if (v && typeof v === 'object') {
+    if (typeof v.url === 'string') out.push(v.url);
+    if (typeof v.contentUrl === 'string') out.push(v.contentUrl);
+    collectImagesFromJsonLdNode(v, out, 1);
+  }
+}
+
+/** Walk JSON-LD (including @graph) and collect URLs from image fields and ImageObject nodes. */
+function collectImagesFromJsonLdNode(node, out, depth = 0) {
+  if (depth > 50 || node == null) return;
+  if (Array.isArray(node)) {
+    for (const x of node) collectImagesFromJsonLdNode(x, out, depth + 1);
+    return;
+  }
+  if (typeof node !== 'object') return;
+
+  const types = node['@type'];
+  const typeStr = Array.isArray(types) ? types.join(',') : String(types || '');
+  if (typeof node.url === 'string' && /ImageObject/i.test(typeStr)) {
+    out.push(node.url);
+  }
+
+  for (const [k, v] of Object.entries(node)) {
+    if (v == null) continue;
+    if (k === 'image' || k === 'images' || k === 'thumbnail' || k === 'photo' || k === 'photos') {
+      pushJsonLdImageValues(v, out);
+    } else if (typeof v === 'object') {
+      collectImagesFromJsonLdNode(v, out, depth + 1);
+    }
+  }
+}
+
+function collectImagesFromJsonLdScripts(doc) {
+  const raw = [];
+  doc.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+    const text = (s.textContent || '').trim();
+    if (!text) return;
+    try {
+      const data = JSON.parse(text);
+      collectImagesFromJsonLdNode(data, raw);
+    } catch {
+      /* ignore invalid JSON */
+    }
+  });
+  return raw;
+}
+
+function firstSrcFromSrcset(srcset) {
+  if (!srcset || typeof srcset !== 'string') return '';
+  const first = srcset.split(',')[0].trim().split(/\s+/)[0];
+  return first || '';
+}
+
+/** Heuristic: visible product-style images from the DOM (og alone is often a single file). */
+function collectImagesFromDom(doc, pageUrl) {
+  const out = [];
+  const imgish = /\.(jpe?g|png|webp|gif)(\?|#|$)/i;
+
+  for (const el of doc.querySelectorAll('img[src], img[data-src]')) {
+    const src =
+      el.getAttribute('data-src') ||
+      el.getAttribute('data-lazy-src') ||
+      el.getAttribute('src') ||
+      '';
+    const w = parseInt(el.getAttribute('width') || '0', 10);
+    const h = parseInt(el.getAttribute('height') || '0', 10);
+    if (w > 0 && h > 0 && w < 100 && h < 100) continue;
+    const u = normalizeImageUrl(src, pageUrl);
+    if (!u || !imgish.test(u)) continue;
+    if (/pixel|spacer|blank|1x1|tracking|beacon|favicon|sprite/i.test(u)) continue;
+    out.push(u);
+  }
+
+  for (const el of doc.querySelectorAll('source[srcset]')) {
+    const u = normalizeImageUrl(firstSrcFromSrcset(el.getAttribute('srcset')), pageUrl);
+    if (u && imgish.test(u) && !/pixel|spacer|1x1/i.test(u)) out.push(u);
+  }
+
+  return out;
+}
+
 function parseProductHtml(html, pageUrl) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const pick = (sel) => doc.querySelector(sel)?.getAttribute('content')?.trim();
@@ -80,15 +181,30 @@ function parseProductHtml(html, pageUrl) {
     pick('meta[name="description"]') ||
     '';
   const baseUrl = pageUrl || '';
-  let image =
-    normalizeImageUrl(pick('meta[property="og:image"]') || pick('meta[name="twitter:image"]') || '', baseUrl);
-  const extras = [];
-  doc.querySelectorAll('meta[property="og:image"]').forEach((m, i) => {
-    if (i === 0) return;
+
+  const fromMeta = [];
+  doc.querySelectorAll('meta[property="og:image"]').forEach((m) => {
     const u = normalizeImageUrl(m.getAttribute('content') || '', baseUrl);
-    if (u && u !== image) extras.push(u);
+    if (u) fromMeta.push(u);
   });
-  return { title, desc, images: [image, ...extras].filter(Boolean) };
+  const tw = normalizeImageUrl(pick('meta[name="twitter:image"]') || '', baseUrl);
+  if (tw) fromMeta.push(tw);
+  for (let i = 0; i < 8; i++) {
+    const u = normalizeImageUrl(
+      doc.querySelector(`meta[name="twitter:image${i}"]`)?.getAttribute('content')?.trim() || '',
+      baseUrl
+    );
+    if (u) fromMeta.push(u);
+  }
+
+  const fromLd = collectImagesFromJsonLdScripts(doc).map((r) => normalizeImageUrl(r, baseUrl)).filter(Boolean);
+  const fromDom = collectImagesFromDom(doc, baseUrl);
+
+  const merged = dedupeImageUrls([...fromMeta, ...fromLd, ...fromDom]);
+  const maxImages = 24;
+  const images = merged.slice(0, maxImages);
+
+  return { title, desc, images };
 }
 
 let state = {

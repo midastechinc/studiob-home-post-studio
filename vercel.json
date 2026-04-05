@@ -1,5 +1,11 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "framework": "vite"
+  "framework": "vite",
+  "functions": {
+    "api/fetch-url.js": {
+      "memory": 1024,
+      "maxDuration": 10
+    }
+  }
 }

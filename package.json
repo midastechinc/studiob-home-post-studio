@@ -10,7 +10,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npx vercel --prod",
+    "deploy:preview": "npx vercel"
   },
   "devDependencies": {
     "vite": "^6.2.0"

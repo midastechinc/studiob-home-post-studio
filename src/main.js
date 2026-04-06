@@ -1,4 +1,5 @@
 import './style.css';
+import html2canvas from 'html2canvas';
 
 const STORAGE_SUPPLIERS = 'sb-suppliers-v1';
 const STORAGE_CAPTION = 'sb-caption-v1';
@@ -409,6 +410,11 @@ function render() {
       <section class="panel full-span">
         <h2>Preview</h2>
         <p class="panel-note">4:5 aspect ratio. Dots match Instagram carousel position.</p>
+        <div class="row" style="margin-bottom:14px;flex-wrap:wrap;gap:10px;align-items:center">
+          <button type="button" class="btn btn-primary" id="btn-export-png">Download carousel (1080×1350 PNG)</button>
+          <button type="button" class="btn btn-ghost" id="btn-export-caption">Download caption (.txt)</button>
+        </div>
+        <p class="panel-note" id="export-status" style="margin:-4px 0 12px;min-height:1.2em"></p>
         <div class="phone">
           <div class="phone-notch"><span></span></div>
           <div class="slide-viewport" id="slide-viewport"></div>
@@ -484,6 +490,131 @@ function readPickerSelection() {
     if (c) out.push(c.url);
   });
   return out;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function waitImage(img) {
+  if (!img) return Promise.resolve();
+  if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      img.removeEventListener('load', done);
+      img.removeEventListener('error', done);
+      resolve();
+    };
+    img.addEventListener('load', done);
+    img.addEventListener('error', done);
+  });
+}
+
+function exportBrandOverlayHtml() {
+  const lines = SHOWROOM.lines.map(escapeHtml).join('<br />');
+  const hrs = SHOWROOM.hours.map(escapeHtml).join(' · ');
+  return `<strong>Visit Studio B Home</strong>${lines}<br /><br />${hrs}`;
+}
+
+function exportProductOverlayHtml() {
+  const title = state.product.title || 'New arrival';
+  const desc = state.product.desc || '';
+  const snippet = escapeHtml(desc).slice(0, 220) + (desc.length > 220 ? '…' : '');
+  return `<strong>${escapeHtml(title)}</strong>${snippet}`;
+}
+
+function buildExportFrame(slide) {
+  const frame = document.createElement('div');
+  frame.className = 'export-slide-frame' + (slide.type === 'brand' ? ' export-brand' : '');
+  const img = document.createElement('img');
+  img.crossOrigin = 'anonymous';
+  img.decoding = 'async';
+  img.src = slide.type === 'brand' ? '/logo.png' : displayImageSrc(slide.src);
+  const brand = document.createElement('div');
+  brand.className = 'export-slide-brand';
+  brand.innerHTML = slide.type === 'brand' ? exportBrandOverlayHtml() : exportProductOverlayHtml();
+  frame.appendChild(img);
+  frame.appendChild(brand);
+  return frame;
+}
+
+function getOrCreateExportHost() {
+  let el = document.getElementById('export-canvas-host');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'export-canvas-host';
+    el.className = 'export-canvas-host';
+    el.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+let exportCarouselInProgress = false;
+
+async function exportCarouselPngs() {
+  if (exportCarouselInProgress) return;
+  const btn = document.getElementById('btn-export-png');
+  const st = document.getElementById('export-status');
+  exportCarouselInProgress = true;
+  if (btn) btn.disabled = true;
+  try {
+    await document.fonts.ready.catch(() => {});
+    const plan = slidesPlan();
+    if (!plan.length) {
+      if (st) st.textContent = 'Nothing to export.';
+      return;
+    }
+    const host = getOrCreateExportHost();
+    for (let i = 0; i < plan.length; i++) {
+      if (st) st.textContent = `Rendering slide ${i + 1} of ${plan.length}…`;
+      host.innerHTML = '';
+      const frame = buildExportFrame(plan[i]);
+      host.appendChild(frame);
+      const imgEl = frame.querySelector('img');
+      await waitImage(imgEl);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const canvas = await html2canvas(frame, {
+        width: 1080,
+        height: 1350,
+        scale: 1,
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: '#000000',
+        logging: false
+      });
+      const blob = await new Promise((res) => canvas.toBlob(res, 'image/png', 0.95));
+      if (!blob) throw new Error('Could not create PNG');
+      const total = String(plan.length).padStart(2, '0');
+      const idx = String(i + 1).padStart(2, '0');
+      downloadBlob(blob, `StudioB-carousel-${idx}-of-${total}.png`);
+      await new Promise((r) => setTimeout(r, 450));
+    }
+    if (st)
+      st.textContent = `Saved ${plan.length} file(s). In Instagram, add a post → select photos in order (01, 02, …) → paste caption from .txt if you exported it.`;
+  } catch (e) {
+    console.error(e);
+    if (st) st.textContent = 'Export failed: ' + (e && e.message ? e.message : String(e));
+  } finally {
+    exportCarouselInProgress = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function downloadCaptionTxt() {
+  const cap = state.caption || '';
+  const blob = new Blob([cap || '(empty caption — fill the Caption draft field)'], {
+    type: 'text/plain;charset=utf-8'
+  });
+  downloadBlob(blob, 'StudioB-instagram-caption.txt');
 }
 
 function slidesPlan() {
@@ -690,6 +821,14 @@ function bind() {
     state.product.images = pickDefaultImages(state.product.candidates);
     renderImagePicker();
     renderSlides();
+  });
+
+  document.getElementById('btn-export-png')?.addEventListener('click', () => {
+    exportCarouselPngs();
+  });
+
+  document.getElementById('btn-export-caption')?.addEventListener('click', () => {
+    downloadCaptionTxt();
   });
 }
 

@@ -23,7 +23,7 @@ Plain `npm run dev` without `vercel dev` will not load remote images (placeholde
 
 ## Image proxy (`/api/image-proxy`)
 
-Product photos are loaded through this route so **grid + preview** are not blocked by **Referer / hotlink** rules. Allowed hosts include supplier domains, their subdomains, and **known third-party CDNs** (e.g. Walter Knoll uses `d248k8q1c80cf8.cloudfront.net` — your UI may show that URL ending in `…cloudfront.net/…`). See `api/allowlist.js` to add more CDN hostnames if a supplier changes infrastructure.
+Product photos are loaded through this route so **grid + preview** are not blocked by **Referer / hotlink** rules. Allowed hosts include supplier domains, their subdomains, and **known third-party CDNs** (e.g. Walter Knoll uses `d248k8q1c80cf8.cloudfront.net` and `wk-prod-assets.s3.eu-central-1.amazonaws.com` for some assets — your UI may truncate these as `…cloudfront.net/…` or `…amazonaws.com/…`). See `api/allowlist.js` to add more CDN hostnames if a supplier changes infrastructure.
 
 ## New GitHub repository
 

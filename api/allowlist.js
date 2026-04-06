@@ -19,7 +19,9 @@ const ALLOWED_SUFFIXES = ['.walterknoll.de', '.dedon.de', '.henge07.com', '.heng
  * Walter Knoll product imagery is served from this CloudFront distribution.
  */
 export const CDN_HOST_REFERER = {
-  'd248k8q1c80cf8.cloudfront.net': 'https://www.walterknoll.de/'
+  'd248k8q1c80cf8.cloudfront.net': 'https://www.walterknoll.de/',
+  // Mood / materials swatches and some gallery sizes (URLs show as …amazonaws.com/…)
+  'wk-prod-assets.s3.eu-central-1.amazonaws.com': 'https://www.walterknoll.de/'
 };
 
 export function isAllowlistedHost(hostname) {

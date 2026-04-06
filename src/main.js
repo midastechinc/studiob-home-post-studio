@@ -55,6 +55,20 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+/** Load remote supplier images through our /api/image-proxy (fixes hotlink / Referer blocks). */
+function displayImageSrc(url) {
+  if (!url) return '';
+  const u = String(url).trim();
+  if (u.startsWith('/') || u.startsWith('data:')) return u;
+  try {
+    const p = new URL(u);
+    if (p.protocol !== 'http:' && p.protocol !== 'https:') return u;
+    return '/api/image-proxy?url=' + encodeURIComponent(p.href);
+  } catch {
+    return u;
+  }
+}
+
 function resolveUrl(raw, base) {
   if (!raw || typeof raw !== 'string') return '';
   const t = raw.trim().split(/\s+/)[0];
@@ -451,7 +465,7 @@ function renderImagePicker() {
       return `<label class="img-pick-item${on ? ' selected' : ''}">
         <input type="checkbox" data-idx="${i}" ${on ? 'checked' : ''} />
         <div class="img-pick-thumb-wrap">
-          <img class="img-pick-thumb" src="${escapeHtml(c.url)}" alt="" loading="lazy" crossorigin="anonymous" referrerpolicy="no-referrer" />
+          <img class="img-pick-thumb" src="${escapeHtml(displayImageSrc(c.url))}" alt="" loading="lazy" decoding="async" />
         </div>
         <div class="img-pick-meta" title="${escapeHtml(c.url)}">Score ${Math.round(c.score)} · ${escapeHtml(tail)}</div>
       </label>`;
@@ -511,7 +525,7 @@ function renderSlides() {
       const desc = state.product.desc || '';
       return `
         <div class="slide ${i === state.activeSlide ? 'active' : ''}" data-i="${i}">
-          <img src="${escapeHtml(slide.src)}" alt="" crossorigin="anonymous" />
+          <img src="${escapeHtml(displayImageSrc(slide.src))}" alt="" decoding="async" />
           <div class="slide-brand">
             <strong>${escapeHtml(title)}</strong>
             ${escapeHtml(desc).slice(0, 220)}${desc.length > 220 ? '…' : ''}

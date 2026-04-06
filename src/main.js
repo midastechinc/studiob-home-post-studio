@@ -3,7 +3,6 @@ import './style.css';
 const STORAGE_SUPPLIERS = 'sb-suppliers-v1';
 const STORAGE_CAPTION = 'sb-caption-v1';
 const STORAGE_SLIDES = 'sb-slide-count-v1';
-const STORAGE_EXTRA_IMAGES = 'sb-product-extra-images-v1';
 
 const DEFAULT_SUPPLIERS = [
   { name: 'Henge', url: 'https://www.henge07.com/' },
@@ -56,203 +55,227 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-/** Resolve og:image / twitter:image URLs (protocol-relative, relative, absolute). */
-function normalizeImageUrl(raw, pageUrl) {
-  let u = (raw || '').trim();
-  if (!u) return '';
-  if (u.startsWith('//')) u = 'https:' + u;
-  if (/^https?:/i.test(u)) return u;
+function resolveUrl(raw, base) {
+  if (!raw || typeof raw !== 'string') return '';
+  const t = raw.trim().split(/\s+/)[0];
+  if (!t || t.startsWith('data:') || t.startsWith('javascript:')) return '';
   try {
-    return new URL(u, pageUrl).href;
+    return new URL(t, base).href;
   } catch {
     return '';
   }
 }
 
-function dedupeImageUrls(urls) {
-  const seen = new Set();
-  const out = [];
-  for (const u of urls) {
-    if (!u || seen.has(u)) continue;
-    seen.add(u);
-    out.push(u);
-  }
-  return out;
-}
-
-function isJunkImageUrl(u) {
-  return /favicon|sprite|icons?\/|\/icon-|logo-|avatar|gravatar|pixel|spacer|1x1|placeholder|badge-|loading\.|blank\.|apple-touch|ms-icon|og-image-default|social-share|share-icon|payment-|credit-card|trustpilot|facebook\.com|twitter\.com|linkedin\.com|google-analytics|googletagmanager|doubleclick|hotjar|clarity\.ms|data:image/i.test(
-    u
-  );
-}
-
-/** Any string in JSON that looks like a direct image URL (galleries often live in __NEXT_DATA__ etc.). */
-function collectImageLikeUrlsFromJson(node, out, depth = 0) {
-  if (out.length >= 200 || depth > 120 || node == null) return;
-  if (typeof node === 'string') {
-    if (!/^https?:\/\//i.test(node)) return;
-    if (!/\.(jpe?g|png|webp|gif)(\?|#|$)/i.test(node)) return;
-    if (isJunkImageUrl(node)) return;
-    out.push(node);
-    return;
-  }
-  if (Array.isArray(node)) {
-    for (const x of node) collectImageLikeUrlsFromJson(x, out, depth + 1);
-    return;
-  }
-  if (typeof node === 'object') {
-    for (const v of Object.values(node)) {
-      collectImageLikeUrlsFromJson(v, out, depth + 1);
-    }
-  }
-}
-
-/** Parse inline scripts (not ld+json) as JSON and harvest image URLs. */
-function collectImagesFromInlineJsonScripts(doc) {
-  const out = [];
-  doc.querySelectorAll('script:not([src])').forEach((s) => {
-    if ((s.getAttribute('type') || '').includes('ld+json')) return;
-    const text = (s.textContent || '').trim();
-    if (text.length < 500 || text.length > 3_500_000) return;
-    if (!/\.(jpe?g|png|webp|gif)/i.test(text)) return;
-    try {
-      collectImageLikeUrlsFromJson(JSON.parse(text), out, 0);
-    } catch {
-      /* not valid JSON — raw HTML scan handles quoted URLs below */
-    }
-  });
-  return out;
-}
-
-/** Regex-scan full HTML: galleries are often only inside JS strings in the initial payload. */
-function collectImagesFromHtmlString(html, anchorUrl) {
-  const re = /https?:\/\/[^\s"'<>\\`]+?\.(?:jpe?g|png|webp|gif)(?:\?[^\s"'<>\\`#]*)?/gi;
-  const hits = [];
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    if (hits.length > 120) break;
-    let u = m[0].replace(/\\u002f/gi, '/').replace(/\\u0026/g, '&');
-    u = u.replace(/[,;)}'"]+$/g, '');
-    if (isJunkImageUrl(u)) continue;
-    hits.push({ u, i: m.index });
-  }
-  let ogHost = '';
+function normalizeUrlKey(href) {
   try {
-    ogHost = anchorUrl ? new URL(anchorUrl).hostname : '';
+    const u = new URL(href);
+    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'].forEach((k) =>
+      u.searchParams.delete(k)
+    );
+    return u.href;
   } catch {
-    ogHost = '';
-  }
-  hits.sort((a, b) => {
-    let sa = 0;
-    let sb = 0;
-    try {
-      if (ogHost && new URL(a.u).hostname === ogHost) sa += 10;
-      if (ogHost && new URL(b.u).hostname === ogHost) sb += 10;
-    } catch {
-      /* ignore */
-    }
-    if (sb !== sa) return sb - sa;
-    return a.i - b.i;
-  });
-  return dedupeImageUrls(hits.map((h) => h.u));
-}
-
-function parseExtraImageLines(text) {
-  return dedupeImageUrls(
-    (text || '')
-      .split(/\n/)
-      .map((l) => normalizeImageUrl(l.trim(), ''))
-      .filter(Boolean)
-  );
-}
-
-function pushJsonLdImageValues(v, out) {
-  if (typeof v === 'string') {
-    out.push(v);
-    return;
-  }
-  if (Array.isArray(v)) {
-    for (const x of v) pushJsonLdImageValues(x, out);
-    return;
-  }
-  if (v && typeof v === 'object') {
-    if (typeof v.url === 'string') out.push(v.url);
-    if (typeof v.contentUrl === 'string') out.push(v.contentUrl);
-    collectImagesFromJsonLdNode(v, out, 1);
+    return href;
   }
 }
 
-/** Walk JSON-LD (including @graph) and collect URLs from image fields and ImageObject nodes. */
-function collectImagesFromJsonLdNode(node, out, depth = 0) {
-  if (depth > 50 || node == null) return;
-  if (Array.isArray(node)) {
-    for (const x of node) collectImagesFromJsonLdNode(x, out, depth + 1);
-    return;
-  }
-  if (typeof node !== 'object') return;
-
-  const types = node['@type'];
-  const typeStr = Array.isArray(types) ? types.join(',') : String(types || '');
-  if (typeof node.url === 'string' && /ImageObject/i.test(typeStr)) {
-    out.push(node.url);
-  }
-
-  for (const [k, v] of Object.entries(node)) {
-    if (v == null) continue;
-    if (k === 'image' || k === 'images' || k === 'thumbnail' || k === 'photo' || k === 'photos') {
-      pushJsonLdImageValues(v, out);
-    } else if (typeof v === 'object') {
-      collectImagesFromJsonLdNode(v, out, depth + 1);
-    }
-  }
+function isJunkImageUrl(href) {
+  const lower = href.toLowerCase();
+  if (
+    /data:image|\.ico(\?|$)|favicon|pixel\.gif|spacer|1x1|doubleclick|google-analytics|googletagmanager|facebook\.com\/tr/i.test(
+      lower
+    )
+  )
+    return true;
+  if (
+    /logo[_-]?only|site[_-]?logo|brand[_-]?mark|payment|trust[-_]?badge|sprite|avatar[-_]?|profile[-_]?photo/i.test(
+      lower
+    )
+  )
+    return true;
+  if (/(?:^|\/)icons?\/|\/i\/icons\/|social[-_]icons?|share[-_]icons?/i.test(lower)) return true;
+  return false;
 }
 
-function collectImagesFromJsonLdScripts(doc) {
-  const raw = [];
-  doc.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
-    const text = (s.textContent || '').trim();
-    if (!text) return;
-    try {
-      const data = JSON.parse(text);
-      collectImagesFromJsonLdNode(data, raw);
-    } catch {
-      /* ignore invalid JSON */
-    }
-  });
-  return raw;
+function scoreImageUrl(href) {
+  if (!href || isJunkImageUrl(href)) return -100;
+  let s = 0;
+  const lower = href.toLowerCase();
+  if (/\.(jpg|jpeg|png|webp)(\?|$)/i.test(lower)) s += 4;
+  if (/\.gif(\?|$)/i.test(lower)) s -= 1;
+  if (/\.svg(\?|$)/i.test(lower)) s -= 4;
+  const dim = lower.match(/(\d{3,4})\s*x\s*(\d{3,4})/);
+  if (dim) {
+    const a = parseInt(dim[1], 10) * parseInt(dim[2], 10);
+    if (a >= 800_000) s += 12;
+    else if (a >= 500_000) s += 9;
+    else if (a >= 200_000) s += 6;
+    else if (a >= 80_000) s += 3;
+  }
+  if (/\b(w|width|h|height)=['"]?\d{1,3}\b/.test(lower)) s -= 4;
+  if (/_\d{2,3}x\d{2,3}[-_.]|[-_]thumb|[-_]small|[-_]mini|[-_]tiny|[-_]xs[-_.]/i.test(lower)) s -= 10;
+  if (
+    /(?:product|gallery|zoom|hero|large|full|hd|hi[-_]?res|master|original|detail|scene|lifestyle|roomshot|ambiente|stilllife|collection)/i.test(
+      lower
+    )
+  )
+    s += 10;
+  if (/\b(cdn|shopify|cloudinary|imgix|scene7|contentful|akamai)\b/i.test(lower)) s += 2;
+  if (/banner|deal|sale[-_]?|promo|newsletter|header[-_]?bg|footer|category[-_]?tile/i.test(lower)) s -= 8;
+  return s;
 }
 
-function firstSrcFromSrcset(srcset) {
-  if (!srcset || typeof srcset !== 'string') return '';
-  const first = srcset.split(',')[0].trim().split(/\s+/)[0];
-  return first || '';
-}
-
-/** Heuristic: visible product-style images from the DOM (og alone is often a single file). */
-function collectImagesFromDom(doc, pageUrl) {
+function urlsFromSrcset(srcset, base) {
+  if (!srcset || typeof srcset !== 'string') return [];
+  const parts = [];
+  for (const chunk of srcset.split(',')) {
+    const seg = chunk.trim().split(/\s+/);
+    const u = seg[0];
+    if (!u) continue;
+    const cand = seg.find((x) => /^\d+w$/i.test(x));
+    const w = cand ? parseInt(cand, 10) : 0;
+    const r = resolveUrl(u, base);
+    if (r) parts.push({ url: r, w });
+  }
+  parts.sort((a, b) => b.w - a.w);
   const out = [];
-  const imgish = /\.(jpe?g|png|webp|gif)(\?|#|$)/i;
+  const seen = new Set();
+  for (const { url } of parts) {
+    const k = normalizeUrlKey(url);
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(url);
+    }
+  }
+  return out;
+}
 
-  for (const el of doc.querySelectorAll('img[src], img[data-src]')) {
-    const src =
-      el.getAttribute('data-src') ||
-      el.getAttribute('data-lazy-src') ||
-      el.getAttribute('src') ||
-      '';
-    const w = parseInt(el.getAttribute('width') || '0', 10);
-    const h = parseInt(el.getAttribute('height') || '0', 10);
-    if (w > 0 && h > 0 && w < 100 && h < 100) continue;
-    const u = normalizeImageUrl(src, pageUrl);
-    if (!u || !imgish.test(u)) continue;
-    if (/pixel|spacer|blank|1x1|tracking|beacon|favicon|sprite/i.test(u)) continue;
-    out.push(u);
+function extractJsonLdProductImages(doc, base) {
+  const urls = [];
+  for (const sc of doc.querySelectorAll('script[type="application/ld+json"]')) {
+    const raw = sc.textContent?.trim();
+    if (!raw) continue;
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    let items;
+    if (data && Array.isArray(data['@graph'])) items = data['@graph'];
+    else items = Array.isArray(data) ? data : [data];
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const rawT = item['@type'];
+      const types = (Array.isArray(rawT) ? rawT : [rawT])
+        .filter(Boolean)
+        .map((t) => (typeof t === 'string' ? t : ''));
+      const isProduct = types.some((t) => /Product|ProductGroup|IndividualProduct/i.test(t));
+      if (!isProduct) continue;
+      const img = item.image;
+      const add = (u) => {
+        const r = resolveUrl(u, base);
+        if (r) urls.push(r);
+      };
+      if (typeof img === 'string') add(img);
+      else if (Array.isArray(img)) {
+        img.forEach((x) => {
+          if (typeof x === 'string') add(x);
+          else if (x && typeof x === 'object' && x.url) add(x.url);
+        });
+      } else if (img && typeof img === 'object' && img.url) add(img.url);
+    }
+  }
+  return urls;
+}
+
+function collectScoredImageCandidates(doc, baseHref) {
+  const scored = [];
+
+  const bump = (href, boost) => {
+    const r = resolveUrl(href, baseHref);
+    if (!r) return;
+    scored.push({ url: r, boost });
+  };
+
+  doc
+    .querySelectorAll(
+      'meta[property="og:image"], meta[property="og:image:url"], meta[property="og:image:secure_url"]'
+    )
+    .forEach((m) => bump(m.getAttribute('content'), 16));
+
+  doc.querySelectorAll('meta[name^="twitter:image"], meta[property^="twitter:image"]').forEach((m) => {
+    bump(m.getAttribute('content'), 11);
+  });
+
+  doc.querySelectorAll('link[rel="image_src"], link[rel="preload"][as="image"]').forEach((l) => {
+    bump(l.getAttribute('href'), 9);
+  });
+
+  for (const u of extractJsonLdProductImages(doc, baseHref)) {
+    scored.push({ url: u, boost: 18 });
   }
 
-  for (const el of doc.querySelectorAll('source[srcset]')) {
-    const u = normalizeImageUrl(firstSrcFromSrcset(el.getAttribute('srcset')), pageUrl);
-    if (u && imgish.test(u) && !/pixel|spacer|1x1/i.test(u)) out.push(u);
+  doc.querySelectorAll('picture source[srcset]').forEach((s) => {
+    for (const u of urlsFromSrcset(s.getAttribute('srcset'), baseHref)) {
+      scored.push({ url: u, boost: 6 });
+    }
+  });
+
+  const imgAttrs = [
+    'src',
+    'data-src',
+    'data-lazy-src',
+    'data-original',
+    'data-zoom-image',
+    'data-large_image',
+    'data-srcset'
+  ];
+  doc.querySelectorAll('img').forEach((img) => {
+    if (
+      img.closest(
+        'header, footer, nav, [role="navigation"], [class*="cookie" i], [id*="cookie" i], [class*="newsletter" i]'
+      )
+    )
+      return;
+    for (const a of imgAttrs) {
+      const v = img.getAttribute(a);
+      if (v && a !== 'data-srcset') bump(v, 4);
+    }
+    const ss = img.getAttribute('srcset');
+    if (ss) {
+      for (const u of urlsFromSrcset(ss, baseHref)) {
+        scored.push({ url: u, boost: 5 });
+      }
+    }
+  });
+
+  const map = new Map();
+  for (const { url, boost } of scored) {
+    const key = normalizeUrlKey(url);
+    const sc = scoreImageUrl(url) + boost;
+    if (sc <= -80) continue;
+    const prev = map.get(key);
+    if (prev == null || sc > prev) map.set(key, sc);
   }
 
+  const ranked = [...map.entries()]
+    .map(([url, score]) => ({ url, score }))
+    .sort((a, b) => b.score - a.score);
+  return ranked.slice(0, 50);
+}
+
+function pickDefaultImages(candidates) {
+  const out = [];
+  for (const c of candidates) {
+    if (out.length >= 8) break;
+    if (c.score >= 3) out.push(c.url);
+  }
+  if (out.length < 3) {
+    for (const c of candidates) {
+      if (out.length >= 6) break;
+      if (!out.includes(c.url)) out.push(c.url);
+    }
+  }
   return out;
 }
 
@@ -267,48 +290,25 @@ function parseProductHtml(html, pageUrl) {
     pick('meta[property="og:description"]') ||
     pick('meta[name="description"]') ||
     '';
-  const baseUrl = pageUrl || '';
 
-  const fromMeta = [];
-  doc.querySelectorAll('meta[property="og:image"]').forEach((m) => {
-    const u = normalizeImageUrl(m.getAttribute('content') || '', baseUrl);
-    if (u) fromMeta.push(u);
-  });
-  const tw = normalizeImageUrl(pick('meta[name="twitter:image"]') || '', baseUrl);
-  if (tw) fromMeta.push(tw);
-  for (let i = 0; i < 8; i++) {
-    const u = normalizeImageUrl(
-      doc.querySelector(`meta[name="twitter:image${i}"]`)?.getAttribute('content')?.trim() || '',
-      baseUrl
-    );
-    if (u) fromMeta.push(u);
+  let base = pageUrl;
+  try {
+    base = new URL(pageUrl).href;
+  } catch {
+    /* keep */
   }
 
-  const fromLd = collectImagesFromJsonLdScripts(doc).map((r) => normalizeImageUrl(r, baseUrl)).filter(Boolean);
-  const fromDom = collectImagesFromDom(doc, baseUrl);
-  const fromScripts = collectImagesFromInlineJsonScripts(doc)
-    .map((r) => normalizeImageUrl(r, baseUrl))
-    .filter(Boolean);
-  const anchor = fromMeta[0] || '';
-  const fromRawHtml = collectImagesFromHtmlString(html, anchor).map((r) => normalizeImageUrl(r, baseUrl)).filter(Boolean);
+  const candidates = collectScoredImageCandidates(doc, base);
+  const defaultImages = pickDefaultImages(candidates);
 
-  const merged = dedupeImageUrls([...fromMeta, ...fromLd, ...fromDom, ...fromScripts, ...fromRawHtml]);
-  const maxImages = 36;
-  const images = merged.slice(0, maxImages);
-
-  return { title, desc, images };
+  return { title, desc, candidates, defaultImages };
 }
 
 let state = {
   suppliers: loadSuppliers(),
   caption: localStorage.getItem(STORAGE_CAPTION) || '',
   slideCount: Math.min(7, Math.max(3, parseInt(localStorage.getItem(STORAGE_SLIDES) || '5', 10) || 5)),
-  product: {
-    title: '',
-    desc: '',
-    images: [],
-    extraImageLines: localStorage.getItem(STORAGE_EXTRA_IMAGES) || ''
-  },
+  product: { title: '', desc: '', images: [], candidates: [] },
   activeSlide: 0,
   fetchMsg: '',
   fetchErr: ''
@@ -325,7 +325,7 @@ function render() {
         <h1>Post Studio</h1>
         <p class="hdr-sub">Luxury Instagram carousels from supplier pages. All Studio B Post Studio code and data for this tool belong in this repository only.</p>
       </div>
-      <img class="hdr-logo" src="/logo.svg" alt="Studio B Home" width="120" height="120" />
+      <img class="hdr-logo" src="/logo.png" alt="Studio B Home" width="120" height="120" />
     </header>
 
     <div class="grid">
@@ -356,9 +356,16 @@ function render() {
           <label for="desc-edit">Short description (for slides)</label>
           <textarea id="desc-edit" rows="3">${escapeHtml(state.product.desc)}</textarea>
         </div>
-        <div class="field">
-          <label for="extra-images">Extra product image URLs (one per line)</label>
-          <textarea id="extra-images" rows="4" placeholder="Paste direct image links from the supplier gallery (right-click image → copy address). Optional if import finds enough photos.">${escapeHtml(state.product.extraImageLines)}</textarea>
+
+        <div id="image-pick-section" class="image-pick-section" style="display:none;margin-top:22px">
+          <h2 style="margin:0 0 6px;font-size:12px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--sb-muted)">Images for carousel</h2>
+          <p class="panel-note">Ranked for product photography (meta tags, JSON-LD, large <code style="font-size:11px">srcset</code> entries). Uncheck irrelevant shots; order follows this list.</p>
+          <div class="img-pick-actions">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-img-all">Select all</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-img-none">Clear</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-img-best">Best guess</button>
+          </div>
+          <div class="img-pick-grid" id="img-pick-grid"></div>
         </div>
       </section>
 
@@ -371,7 +378,7 @@ function render() {
         </div>
 
         <h2 style="margin-top:22px">Carousel</h2>
-        <p class="panel-note">3–7 slides. First slides cycle imported + extra image URLs; last slide is showroom + logo.</p>
+        <p class="panel-note">3–7 slides. First slides use product images; last slide is showroom + logo.</p>
         <div class="field">
           <label for="slide-count">Number of slides</label>
           <select id="slide-count">
@@ -402,6 +409,7 @@ function render() {
   `;
 
   renderSuppliers();
+  renderImagePicker();
   renderSlides();
   bind();
 }
@@ -422,20 +430,56 @@ function renderSuppliers() {
     .join('');
 }
 
-function productImageUrlsForSlides() {
-  const manual = parseExtraImageLines(state.product.extraImageLines);
-  const auto = state.product.images || [];
-  const merged = dedupeImageUrls([...auto, ...manual]);
-  return merged.length ? merged : [];
+function renderImagePicker() {
+  const sec = document.getElementById('image-pick-section');
+  const grid = document.getElementById('img-pick-grid');
+  if (!sec || !grid) return;
+  const { candidates, images } = state.product;
+  if (!candidates.length) {
+    sec.style.display = 'none';
+    grid.innerHTML = '';
+    return;
+  }
+  sec.style.display = 'block';
+  const selected = new Set(images);
+  const maxShow = 50;
+  const list = candidates.slice(0, maxShow);
+  grid.innerHTML = list
+    .map((c, i) => {
+      const on = selected.has(c.url);
+      const tail = c.url.length > 52 ? '…' + c.url.slice(-48) : c.url;
+      return `<label class="img-pick-item${on ? ' selected' : ''}">
+        <input type="checkbox" data-idx="${i}" ${on ? 'checked' : ''} />
+        <div class="img-pick-thumb-wrap">
+          <img class="img-pick-thumb" src="${escapeHtml(c.url)}" alt="" loading="lazy" crossorigin="anonymous" referrerpolicy="no-referrer" />
+        </div>
+        <div class="img-pick-meta" title="${escapeHtml(c.url)}">Score ${Math.round(c.score)} · ${escapeHtml(tail)}</div>
+      </label>`;
+    })
+    .join('');
+}
+
+function readPickerSelection() {
+  const grid = document.getElementById('img-pick-grid');
+  if (!grid) return state.product.images.slice();
+  const out = [];
+  grid.querySelectorAll('input[type="checkbox"][data-idx]').forEach((cb) => {
+    if (!cb.checked) return;
+    const i = parseInt(cb.dataset.idx, 10);
+    const c = state.product.candidates[i];
+    if (c) out.push(c.url);
+  });
+  return out;
 }
 
 function slidesPlan() {
   const n = state.slideCount;
-  const imgs = productImageUrlsForSlides();
-  const list = imgs.length ? imgs : ['/logo.svg'];
+  const imgs = state.product.images.length
+    ? state.product.images
+    : ['/logo.png'];
   const out = [];
   for (let i = 0; i < n - 1; i++) {
-    out.push({ type: 'image', src: list[i % list.length] });
+    out.push({ type: 'image', src: imgs[i % imgs.length] });
   }
   out.push({ type: 'brand' });
   return out;
@@ -454,7 +498,7 @@ function renderSlides() {
       if (slide.type === 'brand') {
         return `
         <div class="slide ${i === state.activeSlide ? 'active' : ''}" data-i="${i}">
-          <img src="/logo.svg" alt="" style="object-fit:contain;object-position:center;padding:18%;background:#111;" />
+          <img src="/logo.png" alt="" style="object-fit:contain;object-position:center;padding:18%;background:#111;" />
           <div class="slide-brand">
             <strong>Visit Studio B Home</strong>
             ${SHOWROOM.lines.map((l) => escapeHtml(l)).join('<br />')}
@@ -465,10 +509,9 @@ function renderSlides() {
       }
       const title = state.product.title || 'New arrival';
       const desc = state.product.desc || '';
-      const ext = /^https?:\/\//i.test(slide.src);
       return `
         <div class="slide ${i === state.activeSlide ? 'active' : ''}" data-i="${i}">
-          <img src="${escapeHtml(slide.src)}" alt=""${ext ? ' referrerpolicy="no-referrer"' : ''} />
+          <img src="${escapeHtml(slide.src)}" alt="" crossorigin="anonymous" />
           <div class="slide-brand">
             <strong>${escapeHtml(title)}</strong>
             ${escapeHtml(desc).slice(0, 220)}${desc.length > 220 ? '…' : ''}
@@ -540,29 +583,21 @@ function bind() {
         renderSlides();
         return;
       }
-      const finalPageUrl = data.finalUrl || url;
-      const parsed = parseProductHtml(data.html || '', finalPageUrl);
-      const serverUrls = Array.isArray(data.imageUrls)
-        ? data.imageUrls.map((u) => normalizeImageUrl(String(u), finalPageUrl)).filter(Boolean)
-        : [];
-      const mergedImages = dedupeImageUrls([...serverUrls, ...parsed.images]);
-      const extraImageLines =
-        document.getElementById('extra-images')?.value ?? state.product.extraImageLines;
+      const parsed = parseProductHtml(data.html || '', data.finalUrl || url);
       state.product = {
         title: parsed.title,
         desc: parsed.desc,
-        images: mergedImages.length ? mergedImages : [],
-        extraImageLines
+        candidates: parsed.candidates,
+        images: parsed.defaultImages.length ? parsed.defaultImages : []
       };
-      const nImg = mergedImages.length;
       state.fetchMsg =
-        nImg > 1 ? `Imported ${nImg} image URLs from page.`
-        : nImg === 1 ?
-          'Imported 1 image from page. Add more URLs below or paste gallery links if slides repeat the same photo.'
-        : 'Imported text only; no images found in HTML. Paste direct image URLs below.';
+        parsed.candidates.length ?
+          `Imported ${parsed.candidates.length} image candidate(s); ${state.product.images.length} selected for slides. Adjust checkboxes below if needed.`
+        : 'Imported text only — no suitable images found on this page.';
       document.getElementById('title-edit').value = state.product.title;
       document.getElementById('desc-edit').value = state.product.desc;
       state.activeSlide = 0;
+      renderImagePicker();
       renderSlides();
     } catch {
       state.fetchErr =
@@ -577,12 +612,6 @@ function bind() {
   });
   document.getElementById('desc-edit')?.addEventListener('input', (e) => {
     state.product.desc = e.target.value;
-    renderSlides();
-  });
-
-  document.getElementById('extra-images')?.addEventListener('input', (e) => {
-    state.product.extraImageLines = e.target.value;
-    localStorage.setItem(STORAGE_EXTRA_IMAGES, state.product.extraImageLines);
     renderSlides();
   });
 
@@ -613,6 +642,39 @@ function bind() {
   document.getElementById('next-slide')?.addEventListener('click', () => {
     const n = slidesPlan().length;
     state.activeSlide = (state.activeSlide + 1) % n;
+    renderSlides();
+  });
+
+  document.getElementById('img-pick-grid')?.addEventListener('change', (e) => {
+    const cb = e.target.closest('input[type="checkbox"][data-idx]');
+    if (!cb) return;
+    state.product.images = readPickerSelection();
+    const lab = cb.closest('.img-pick-item');
+    if (lab) lab.classList.toggle('selected', cb.checked);
+    renderSlides();
+  });
+
+  document.getElementById('btn-img-all')?.addEventListener('click', () => {
+    document.querySelectorAll('#img-pick-grid input[type="checkbox"]').forEach((cb) => {
+      cb.checked = true;
+      cb.closest('.img-pick-item')?.classList.add('selected');
+    });
+    state.product.images = readPickerSelection();
+    renderSlides();
+  });
+
+  document.getElementById('btn-img-none')?.addEventListener('click', () => {
+    document.querySelectorAll('#img-pick-grid input[type="checkbox"]').forEach((cb) => {
+      cb.checked = false;
+      cb.closest('.img-pick-item')?.classList.remove('selected');
+    });
+    state.product.images = [];
+    renderSlides();
+  });
+
+  document.getElementById('btn-img-best')?.addEventListener('click', () => {
+    state.product.images = pickDefaultImages(state.product.candidates);
+    renderImagePicker();
     renderSlides();
   });
 }

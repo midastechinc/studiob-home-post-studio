@@ -1,5 +1,4 @@
 import './style.css';
-import html2canvas from 'html2canvas';
 
 const STORAGE_SUPPLIERS = 'sb-suppliers-v1';
 const STORAGE_CAPTION = 'sb-caption-v1';
@@ -504,58 +503,153 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-function waitImage(img) {
-  if (!img) return Promise.resolve();
-  if (img.complete && img.naturalWidth > 0) return Promise.resolve();
-  return new Promise((resolve) => {
-    const done = () => {
-      img.removeEventListener('load', done);
-      img.removeEventListener('error', done);
-      resolve();
-    };
-    img.addEventListener('load', done);
-    img.addEventListener('error', done);
+const EXPORT_W = 1080;
+const EXPORT_H = 1350;
+
+function loadImageForExport(src) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.crossOrigin = 'anonymous';
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error('Image failed to load'));
+    im.src = src;
   });
 }
 
-function exportBrandOverlayHtml() {
-  const lines = SHOWROOM.lines.map(escapeHtml).join('<br />');
-  const hrs = SHOWROOM.hours.map(escapeHtml).join(' · ');
-  return `<strong>Visit Studio B Home</strong>${lines}<br /><br />${hrs}`;
-}
-
-function exportProductOverlayHtml() {
-  const title = state.product.title || 'New arrival';
-  const desc = state.product.desc || '';
-  const snippet = escapeHtml(desc).slice(0, 220) + (desc.length > 220 ? '…' : '');
-  return `<strong>${escapeHtml(title)}</strong>${snippet}`;
-}
-
-function buildExportFrame(slide) {
-  const frame = document.createElement('div');
-  frame.className = 'export-slide-frame' + (slide.type === 'brand' ? ' export-brand' : '');
-  const img = document.createElement('img');
-  img.crossOrigin = 'anonymous';
-  img.decoding = 'async';
-  img.src = slide.type === 'brand' ? '/logo.png' : displayImageSrc(slide.src);
-  const brand = document.createElement('div');
-  brand.className = 'export-slide-brand';
-  brand.innerHTML = slide.type === 'brand' ? exportBrandOverlayHtml() : exportProductOverlayHtml();
-  frame.appendChild(img);
-  frame.appendChild(brand);
-  return frame;
-}
-
-function getOrCreateExportHost() {
-  let el = document.getElementById('export-canvas-host');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'export-canvas-host';
-    el.className = 'export-canvas-host';
-    el.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(el);
+/** One high-quality draw — avoids html2canvas blur on photos. */
+function drawImageCover(ctx, img, dw, dh) {
+  if (!img.naturalWidth || !img.naturalHeight) return;
+  const ir = img.naturalWidth / img.naturalHeight;
+  const dr = dw / dh;
+  let sx, sy, sw, sh;
+  if (ir > dr) {
+    sh = img.naturalHeight;
+    sw = Math.round(sh * dr);
+    sx = (img.naturalWidth - sw) / 2;
+    sy = 0;
+  } else {
+    sw = img.naturalWidth;
+    sh = Math.round(sw / dr);
+    sx = 0;
+    sy = (img.naturalHeight - sh) / 2;
   }
-  return el;
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh);
+}
+
+function drawBottomGradient(ctx, dw, dh, yStartRatio) {
+  const y0 = dh * yStartRatio;
+  const g = ctx.createLinearGradient(0, y0, 0, dh);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.82)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, y0, dw, dh - y0);
+}
+
+function ellipsizeLine(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 2 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+
+function layoutWrappedLines(ctx, text, maxW, maxLines) {
+  const words = String(text || '')
+    .split(/\s+/)
+    .filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = w;
+      if (lines.length >= maxLines) return lines;
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, maxLines);
+}
+
+async function renderProductSlideToCanvas(slide) {
+  const canvas = document.createElement('canvas');
+  canvas.width = EXPORT_W;
+  canvas.height = EXPORT_H;
+  const ctx = canvas.getContext('2d');
+  const img = await loadImageForExport(displayImageSrc(slide.src));
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, EXPORT_W, EXPORT_H);
+  drawImageCover(ctx, img, EXPORT_W, EXPORT_H);
+  drawBottomGradient(ctx, EXPORT_W, EXPORT_H, 0.5);
+
+  const pad = 44;
+  const maxText = EXPORT_W - pad * 2;
+  const title = state.product.title || 'New arrival';
+  let desc = (state.product.desc || '').trim();
+  if (desc.length > 320) desc = desc.slice(0, 319) + '…';
+
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = '#fff';
+
+  ctx.font = '400 30px "Outfit", system-ui, sans-serif';
+  const bodyLines = layoutWrappedLines(ctx, desc, maxText, 6);
+  let y = EXPORT_H - 46;
+  for (let i = bodyLines.length - 1; i >= 0; i--) {
+    ctx.fillText(bodyLines[i], pad, y);
+    y -= 38;
+  }
+  y -= 18;
+  ctx.font = '600 44px "Cormorant Garamond", Georgia, serif';
+  ctx.fillText(ellipsizeLine(ctx, title, maxText), pad, y);
+
+  return canvas;
+}
+
+async function renderBrandSlideToCanvas() {
+  const canvas = document.createElement('canvas');
+  canvas.width = EXPORT_W;
+  canvas.height = EXPORT_H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, EXPORT_W, EXPORT_H);
+
+  const img = await loadImageForExport('/logo.png');
+  const boxW = EXPORT_W * 0.72;
+  const boxH = EXPORT_H * 0.46;
+  const bx = (EXPORT_W - boxW) / 2;
+  const by = EXPORT_H * 0.12;
+  const scale = Math.min(boxW / img.naturalWidth, boxH / img.naturalHeight);
+  const iw = img.naturalWidth * scale;
+  const ih = img.naturalHeight * scale;
+  const ix = bx + (boxW - iw) / 2;
+  const iy = by + (boxH - ih) / 2;
+  ctx.drawImage(img, ix, iy, iw, ih);
+
+  drawBottomGradient(ctx, EXPORT_W, EXPORT_H, 0.56);
+
+  const pad = 44;
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = '#fff';
+  let y = EXPORT_H - 48;
+
+  ctx.font = '400 28px "Outfit", system-ui, sans-serif';
+  ctx.fillText(SHOWROOM.hours.join(' · '), pad, y);
+  y -= 40;
+  for (let i = SHOWROOM.lines.length - 1; i >= 0; i--) {
+    ctx.fillText(SHOWROOM.lines[i], pad, y);
+    y -= 36;
+  }
+  y -= 22;
+  ctx.font = '600 44px "Cormorant Garamond", Georgia, serif';
+  ctx.fillText('Visit Studio B Home', pad, y);
+
+  return canvas;
+}
+
+async function renderSlideToCanvas(slide) {
+  if (slide.type === 'brand') return renderBrandSlideToCanvas();
+  return renderProductSlideToCanvas(slide);
 }
 
 let exportCarouselInProgress = false;
@@ -573,33 +667,18 @@ async function exportCarouselPngs() {
       if (st) st.textContent = 'Nothing to export.';
       return;
     }
-    const host = getOrCreateExportHost();
     for (let i = 0; i < plan.length; i++) {
       if (st) st.textContent = `Rendering slide ${i + 1} of ${plan.length}…`;
-      host.innerHTML = '';
-      const frame = buildExportFrame(plan[i]);
-      host.appendChild(frame);
-      const imgEl = frame.querySelector('img');
-      await waitImage(imgEl);
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const canvas = await html2canvas(frame, {
-        width: 1080,
-        height: 1350,
-        scale: 1,
-        useCORS: true,
-        allowTaint: false,
-        backgroundColor: '#000000',
-        logging: false
-      });
-      const blob = await new Promise((res) => canvas.toBlob(res, 'image/png', 0.95));
+      const canvas = await renderSlideToCanvas(plan[i]);
+      const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
       if (!blob) throw new Error('Could not create PNG');
       const total = String(plan.length).padStart(2, '0');
       const idx = String(i + 1).padStart(2, '0');
       downloadBlob(blob, `StudioB-carousel-${idx}-of-${total}.png`);
-      await new Promise((r) => setTimeout(r, 450));
+      await new Promise((r) => setTimeout(r, 350));
     }
     if (st)
-      st.textContent = `Saved ${plan.length} file(s). In Instagram, add a post → select photos in order (01, 02, …) → paste caption from .txt if you exported it.`;
+      st.textContent = `Saved ${plan.length} sharp PNG(s) (native canvas). In Instagram, select photos in order 01… → paste caption if needed.`;
   } catch (e) {
     console.error(e);
     if (st) st.textContent = 'Export failed: ' + (e && e.message ? e.message : String(e));

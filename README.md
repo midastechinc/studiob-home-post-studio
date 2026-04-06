@@ -23,7 +23,7 @@ Plain `npm run dev` without `vercel dev` will not load remote images (placeholde
 
 ## Export for Instagram
 
-In the **Preview** section use **Download carousel (1080×1350 PNG)** to save one PNG per slide (feed-optimized 4:5). Use **Download caption (.txt)** for the long caption. On your phone: New post → select the files **in numbered order** → paste the caption.
+In the **Preview** section use **Download carousel (1080×1350 PNG)** to save one PNG per slide (feed-optimized 4:5). Images are drawn with the **canvas API** (single `drawImage` at full size) so exports stay sharp — not a DOM screenshot. Use **Download caption (.txt)** for the long caption. On your phone: New post → select the files **in numbered order** → paste the caption.
 
 ## Image proxy (`/api/image-proxy`)
 
